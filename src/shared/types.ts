@@ -158,7 +158,7 @@ export interface AppConfig {
     model: string;
   };
   tts: {
-    provider: 'openai' | 'elevenlabs' | 'edge-tts';
+    provider: 'openai' | 'elevenlabs' | 'edge-tts' | 'kokoro';
     openai?: {
       apiKey: string;
       model: string;
@@ -166,6 +166,9 @@ export interface AppConfig {
     elevenlabs?: {
       apiKey: string;
       model: string;
+    };
+    kokoro?: {
+      apiUrl: string;
     };
   };
   paths: {

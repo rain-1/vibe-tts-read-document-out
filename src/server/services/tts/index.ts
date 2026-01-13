@@ -3,13 +3,15 @@ import { BaseTTSProvider } from './base.js';
 import { OpenAITTSProvider } from './openai.js';
 import { ElevenLabsTTSProvider } from './elevenlabs.js';
 import { EdgeTTSProvider } from './edge-tts.js';
+import { KokoroTTSProvider } from './kokoro.js';
 
-export type TTSProviderType = 'openai' | 'elevenlabs' | 'edge-tts';
+export type TTSProviderType = 'openai' | 'elevenlabs' | 'edge-tts' | 'kokoro';
 
 const providers: Record<TTSProviderType, () => BaseTTSProvider> = {
   'openai': () => new OpenAITTSProvider(),
   'elevenlabs': () => new ElevenLabsTTSProvider(),
   'edge-tts': () => new EdgeTTSProvider(),
+  'kokoro': () => new KokoroTTSProvider(),
 };
 
 let currentProvider: BaseTTSProvider | null = null;

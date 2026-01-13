@@ -17,7 +17,7 @@ export function loadConfig(): AppConfig {
       model: getEnv('LLM_MODEL', 'gpt-4o-mini'),
     },
     tts: {
-      provider: getEnv('TTS_PROVIDER', 'openai') as 'openai' | 'elevenlabs' | 'edge-tts',
+      provider: getEnv('TTS_PROVIDER', 'openai') as 'openai' | 'elevenlabs' | 'edge-tts' | 'kokoro',
       openai: {
         apiKey: getEnv('OPENAI_API_KEY', ''),
         model: getEnv('OPENAI_TTS_MODEL', 'tts-1'),
@@ -25,6 +25,9 @@ export function loadConfig(): AppConfig {
       elevenlabs: {
         apiKey: getEnv('ELEVENLABS_API_KEY', ''),
         model: getEnv('ELEVENLABS_MODEL', 'eleven_multilingual_v2'),
+      },
+      kokoro: {
+        apiUrl: getEnv('KOKORO_MODAL_URL', ''),
       },
     },
     paths: {
