@@ -1,10 +1,10 @@
 import { Queue, Worker, Job as BullJob } from 'bullmq';
 import IORedis from 'ioredis';
 import { config } from '../config.js';
-import { Job, JobStatus, TextSegment, JobProgress } from '../../shared/types.js';
+import { Job, JobStatus, TextSegment, JobProgress, VoiceProfileSpeaker } from '../../shared/types.js';
 import * as db from '../database.js';
 import { parseDocument, cleanTextForTTS } from './document-parser.js';
-import { analyzeDocument } from './llm-analyzer.js';
+import { analyzeDocument, analyzeDocumentWithProfile } from './llm-analyzer.js';
 import { getTTSProvider } from './tts/index.js';
 import { stitchAudioFiles } from './audio-stitcher.js';
 import { nanoid } from 'nanoid';
@@ -24,6 +24,8 @@ interface JobData {
   jobId: string;
   documentContent: string;
   fileType: 'text' | 'pdf' | 'html';
+  voiceProfileId?: string;
+  autoUpdateProfile?: boolean; // Automatically add new speakers to the profile
 }
 
 // Progress callback type
@@ -61,11 +63,13 @@ export const documentQueue = new Queue<JobData>('document-to-audio', {
 export async function addJob(
   jobId: string,
   documentContent: string,
-  fileType: 'text' | 'pdf' | 'html'
+  fileType: 'text' | 'pdf' | 'html',
+  voiceProfileId?: string,
+  autoUpdateProfile?: boolean
 ): Promise<void> {
   await documentQueue.add(
     'process',
-    { jobId, documentContent, fileType },
+    { jobId, documentContent, fileType, voiceProfileId, autoUpdateProfile },
     { jobId }
   );
 }
@@ -218,10 +222,13 @@ async function processSegment(
  * Main job processor
  */
 async function processJob(bullJob: BullJob<JobData>): Promise<void> {
-  const { jobId, documentContent, fileType } = bullJob.data;
+  const { jobId, documentContent, fileType, voiceProfileId, autoUpdateProfile } = bullJob.data;
   const startTime = Date.now();
 
-  logger.info({ jobId }, 'Starting job processing');
+  logger.info({ jobId, voiceProfileId }, 'Starting job processing');
+
+  // Track new speakers for profile update
+  let newSpeakersForProfile: VoiceProfileSpeaker[] = [];
 
   try {
     // Step 1: Parse document
@@ -251,7 +258,31 @@ async function processJob(bullJob: BullJob<JobData>): Promise<void> {
       stepProgress: 0,
     });
 
-    const analysis = await analyzeDocument(parsed.text);
+    // Check if we have a voice profile to use
+    let analysis;
+    const voiceProfile = voiceProfileId ? db.getVoiceProfile(voiceProfileId) : null;
+
+    if (voiceProfile) {
+      logger.info({ jobId, profileName: voiceProfile.name }, 'Using voice profile');
+      updateProgress(jobId, 'analyzing', {
+        stepDescription: `Analyzing with profile: ${voiceProfile.name}...`,
+        overallProgress: 15,
+        stepProgress: 10,
+      });
+
+      const result = await analyzeDocumentWithProfile(parsed.text, voiceProfile);
+      analysis = result.analysis;
+      newSpeakersForProfile = result.newSpeakers;
+
+      if (newSpeakersForProfile.length > 0) {
+        logger.info(
+          { jobId, newSpeakers: newSpeakersForProfile.map((s) => s.name) },
+          'New speakers detected'
+        );
+      }
+    } else {
+      analysis = await analyzeDocument(parsed.text);
+    }
 
     logger.info(
       { jobId, speakerCount: analysis.speakers.length, segmentCount: analysis.segments.length },
@@ -393,6 +424,18 @@ async function processJob(bullJob: BullJob<JobData>): Promise<void> {
     }
     if (fs.existsSync(outputDir)) {
       fs.rmdirSync(outputDir, { recursive: true });
+    }
+
+    // Update voice profile with new speakers if enabled
+    if (voiceProfileId && autoUpdateProfile && newSpeakersForProfile.length > 0) {
+      logger.info(
+        { jobId, profileId: voiceProfileId, newSpeakers: newSpeakersForProfile.length },
+        'Adding new speakers to voice profile'
+      );
+
+      for (const newSpeaker of newSpeakersForProfile) {
+        db.addSpeakerToProfile(voiceProfileId, newSpeaker);
+      }
     }
 
     // Update job as completed

@@ -5,6 +5,7 @@ import * as api from '../api';
 interface JobDetailProps {
   job: Job;
   onDelete: () => void;
+  onCreateProfile?: () => void;
 }
 
 const STEPS: Array<{ status: JobStatus; label: string; icon: string }> = [
@@ -21,7 +22,7 @@ function getStepIndex(status: JobStatus): number {
   return idx === -1 ? 0 : idx;
 }
 
-export default function JobDetail({ job, onDelete }: JobDetailProps) {
+export default function JobDetail({ job, onDelete, onCreateProfile }: JobDetailProps) {
   const [liveProgress, setLiveProgress] = useState<JobProgress>(job.progress);
   const audioRef = useRef<HTMLAudioElement>(null);
 
@@ -63,16 +64,30 @@ export default function JobDetail({ job, onDelete }: JobDetailProps) {
             </p>
           </div>
           {isComplete && (
-            <a
-              href={api.getDownloadUrl(job.id)}
-              download
-              className="inline-flex items-center px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
-            >
-              <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-              </svg>
-              Download Audio
-            </a>
+            <div className="flex items-center gap-2">
+              {onCreateProfile && job.speakers.length > 0 && !job.voiceProfileId && (
+                <button
+                  onClick={onCreateProfile}
+                  className="inline-flex items-center px-4 py-2 bg-purple-600 text-white text-sm font-medium rounded-lg hover:bg-purple-700 transition-colors"
+                  title="Save speaker voices for use in future documents"
+                >
+                  <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+                  </svg>
+                  Save Voice Profile
+                </button>
+              )}
+              <a
+                href={api.getDownloadUrl(job.id)}
+                download
+                className="inline-flex items-center px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                </svg>
+                Download Audio
+              </a>
+            </div>
           )}
         </div>
       </div>
@@ -264,6 +279,25 @@ export default function JobDetail({ job, onDelete }: JobDetailProps) {
                 </h4>
                 <p className="text-sm text-red-700 mt-1">
                   {job.errorMessage}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Voice Profile Info */}
+        {job.voiceProfileName && (
+          <div className="mb-8 bg-purple-50 border border-purple-200 rounded-lg p-4">
+            <div className="flex items-center">
+              <svg className="w-5 h-5 text-purple-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+              </svg>
+              <div className="ml-3">
+                <p className="text-sm font-medium text-purple-800">
+                  Using Voice Profile: {job.voiceProfileName}
+                </p>
+                <p className="text-xs text-purple-600 mt-0.5">
+                  Speaker voices are reused from this profile
                 </p>
               </div>
             </div>

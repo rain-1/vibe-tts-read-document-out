@@ -1,8 +1,11 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
+import { VoiceProfile } from '../../shared/types';
 import * as api from '../api';
 
 interface FileUploadProps {
   onJobCreated: (jobId: string) => void;
+  voiceProfiles: VoiceProfile[];
+  onRefreshProfiles: () => void;
 }
 
 const ACCEPTED_TYPES = {
@@ -14,10 +17,12 @@ const ACCEPTED_TYPES = {
 
 const ACCEPTED_EXTENSIONS = ['.txt', '.text', '.html', '.htm', '.pdf'];
 
-export default function FileUpload({ onJobCreated }: FileUploadProps) {
+export default function FileUpload({ onJobCreated, voiceProfiles, onRefreshProfiles }: FileUploadProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [selectedProfileId, setSelectedProfileId] = useState<string>('');
+  const [autoUpdateProfile, setAutoUpdateProfile] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const getFileType = (file: File): 'text' | 'pdf' | 'html' | null => {
@@ -56,8 +61,12 @@ export default function FileUpload({ onJobCreated }: FileUploadProps) {
         fileContent = await api.readFileAsText(file);
       }
 
-      // Create job
-      const result = await api.createJob(file.name, fileContent, fileType);
+      // Create job with voice profile if selected
+      const result = await api.createJob(file.name, fileContent, fileType, {
+        voiceProfileId: selectedProfileId || undefined,
+        autoUpdateProfile: autoUpdateProfile,
+      });
+
       onJobCreated(result.jobId);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to upload file');
@@ -94,7 +103,7 @@ export default function FileUpload({ onJobCreated }: FileUploadProps) {
         processFile(files[0]);
       }
     },
-    [processFile]
+    [selectedProfileId, autoUpdateProfile]
   );
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -114,8 +123,65 @@ export default function FileUpload({ onJobCreated }: FileUploadProps) {
     }
   };
 
+  const selectedProfile = voiceProfiles.find((p) => p.id === selectedProfileId);
+
   return (
     <div className="space-y-4">
+      {/* Voice Profile Selector */}
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">
+          Voice Profile (for consistent character voices)
+        </label>
+        <div className="flex gap-2">
+          <select
+            value={selectedProfileId}
+            onChange={(e) => setSelectedProfileId(e.target.value)}
+            disabled={uploading}
+            className="flex-1 px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50"
+          >
+            <option value="">No profile (create new voices)</option>
+            {voiceProfiles.map((profile) => (
+              <option key={profile.id} value={profile.id}>
+                {profile.name} ({profile.speakers.length} speakers)
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={onRefreshProfiles}
+            className="px-3 py-2 text-gray-500 hover:text-gray-700 border border-gray-300 rounded-md"
+            title="Refresh profiles"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Profile info */}
+        {selectedProfile && (
+          <div className="mt-2 p-2 bg-blue-50 rounded-md">
+            <p className="text-xs text-blue-800">
+              <span className="font-medium">Using profile:</span> {selectedProfile.name}
+            </p>
+            <p className="text-xs text-blue-600 mt-1">
+              Speakers: {selectedProfile.speakers.map((s) => s.name).join(', ')}
+            </p>
+            <label className="flex items-center gap-2 mt-2 text-xs">
+              <input
+                type="checkbox"
+                checked={autoUpdateProfile}
+                onChange={(e) => setAutoUpdateProfile(e.target.checked)}
+                className="rounded text-blue-600"
+              />
+              <span className="text-gray-600">
+                Auto-add new characters to profile
+              </span>
+            </label>
+          </div>
+        )}
+      </div>
+
       {/* Drop zone */}
       <div
         className={`
@@ -204,7 +270,10 @@ export default function FileUpload({ onJobCreated }: FileUploadProps) {
         </div>
       </div>
 
-      <TextInput onSubmit={(text) => processFile(new File([text], 'pasted-text.txt', { type: 'text/plain' }))} disabled={uploading} />
+      <TextInput
+        onSubmit={(text) => processFile(new File([text], 'pasted-text.txt', { type: 'text/plain' }))}
+        disabled={uploading}
+      />
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { Job, JobStatus, Speaker, TextSegment, JobProgress } from '../shared/types.js';
+import { Job, JobStatus, Speaker, TextSegment, JobProgress, VoiceProfile, VoiceProfileSpeaker } from '../shared/types.js';
 import { config } from './config.js';
 import fs from 'fs';
 import path from 'path';
@@ -27,13 +27,29 @@ db.exec(`
     segments_json TEXT NOT NULL DEFAULT '[]',
     output_file TEXT,
     error_message TEXT,
+    voice_profile_id TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    completed_at TEXT
+    completed_at TEXT,
+    FOREIGN KEY (voice_profile_id) REFERENCES voice_profiles(id)
   );
 
   CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
   CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at);
+  CREATE INDEX IF NOT EXISTS idx_jobs_voice_profile ON jobs(voice_profile_id);
+
+  -- Voice Profiles table for reusing speaker voices across documents
+  CREATE TABLE IF NOT EXISTS voice_profiles (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    speakers_json TEXT NOT NULL DEFAULT '[]',
+    source_job_id TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_voice_profiles_name ON voice_profiles(name);
 `);
 
 export interface JobRow {
@@ -46,12 +62,30 @@ export interface JobRow {
   segments_json: string;
   output_file: string | null;
   error_message: string | null;
+  voice_profile_id: string | null;
   created_at: string;
   updated_at: string;
   completed_at: string | null;
 }
 
+export interface VoiceProfileRow {
+  id: string;
+  name: string;
+  description: string | null;
+  speakers_json: string;
+  source_job_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 function rowToJob(row: JobRow): Job {
+  // Get voice profile name if profile ID exists
+  let voiceProfileName: string | undefined;
+  if (row.voice_profile_id) {
+    const profile = getVoiceProfile(row.voice_profile_id);
+    voiceProfileName = profile?.name;
+  }
+
   return {
     id: row.id,
     originalFilename: row.original_filename,
@@ -62,16 +96,31 @@ function rowToJob(row: JobRow): Job {
     segments: JSON.parse(row.segments_json) as TextSegment[],
     outputFile: row.output_file ?? undefined,
     errorMessage: row.error_message ?? undefined,
+    voiceProfileId: row.voice_profile_id ?? undefined,
+    voiceProfileName,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     completedAt: row.completed_at ?? undefined,
   };
 }
 
+function rowToVoiceProfile(row: VoiceProfileRow): VoiceProfile {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description ?? undefined,
+    speakers: JSON.parse(row.speakers_json) as VoiceProfileSpeaker[],
+    sourceJobId: row.source_job_id ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 export function createJob(
   id: string,
   originalFilename: string,
-  fileType: Job['fileType']
+  fileType: Job['fileType'],
+  voiceProfileId?: string
 ): Job {
   const now = new Date().toISOString();
   const progress: JobProgress = {
@@ -85,11 +134,18 @@ export function createJob(
   };
 
   const stmt = db.prepare(`
-    INSERT INTO jobs (id, original_filename, file_type, status, progress_json, created_at, updated_at)
-    VALUES (?, ?, ?, 'pending', ?, ?, ?)
+    INSERT INTO jobs (id, original_filename, file_type, status, progress_json, voice_profile_id, created_at, updated_at)
+    VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)
   `);
 
-  stmt.run(id, originalFilename, fileType, JSON.stringify(progress), now, now);
+  stmt.run(id, originalFilename, fileType, JSON.stringify(progress), voiceProfileId ?? null, now, now);
+
+  // Get voice profile name if provided
+  let voiceProfileName: string | undefined;
+  if (voiceProfileId) {
+    const profile = getVoiceProfile(voiceProfileId);
+    voiceProfileName = profile?.name;
+  }
 
   return {
     id,
@@ -99,6 +155,8 @@ export function createJob(
     progress,
     speakers: [],
     segments: [],
+    voiceProfileId,
+    voiceProfileName,
     createdAt: now,
     updatedAt: now,
   };
@@ -216,6 +274,152 @@ export function deleteJob(id: string): boolean {
   const stmt = db.prepare('DELETE FROM jobs WHERE id = ?');
   const result = stmt.run(id);
   return result.changes > 0;
+}
+
+// ============================================
+// Voice Profile Functions
+// ============================================
+
+export function createVoiceProfile(
+  id: string,
+  name: string,
+  speakers: VoiceProfileSpeaker[],
+  description?: string,
+  sourceJobId?: string
+): VoiceProfile {
+  const now = new Date().toISOString();
+
+  const stmt = db.prepare(`
+    INSERT INTO voice_profiles (id, name, description, speakers_json, source_job_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  stmt.run(id, name, description ?? null, JSON.stringify(speakers), sourceJobId ?? null, now, now);
+
+  return {
+    id,
+    name,
+    description,
+    speakers,
+    sourceJobId,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+export function getVoiceProfile(id: string): VoiceProfile | null {
+  const stmt = db.prepare('SELECT * FROM voice_profiles WHERE id = ?');
+  const row = stmt.get(id) as VoiceProfileRow | undefined;
+  return row ? rowToVoiceProfile(row) : null;
+}
+
+export function getVoiceProfileByName(name: string): VoiceProfile | null {
+  const stmt = db.prepare('SELECT * FROM voice_profiles WHERE name = ? COLLATE NOCASE');
+  const row = stmt.get(name) as VoiceProfileRow | undefined;
+  return row ? rowToVoiceProfile(row) : null;
+}
+
+export function getAllVoiceProfiles(): VoiceProfile[] {
+  const stmt = db.prepare('SELECT * FROM voice_profiles ORDER BY updated_at DESC');
+  const rows = stmt.all() as VoiceProfileRow[];
+  return rows.map(rowToVoiceProfile);
+}
+
+export function updateVoiceProfile(
+  id: string,
+  updates: {
+    name?: string;
+    description?: string;
+    speakers?: VoiceProfileSpeaker[];
+  }
+): VoiceProfile | null {
+  const profile = getVoiceProfile(id);
+  if (!profile) return null;
+
+  const now = new Date().toISOString();
+  const newName = updates.name ?? profile.name;
+  const newDescription = updates.description ?? profile.description;
+  const newSpeakers = updates.speakers ?? profile.speakers;
+
+  const stmt = db.prepare(`
+    UPDATE voice_profiles
+    SET name = ?, description = ?, speakers_json = ?, updated_at = ?
+    WHERE id = ?
+  `);
+
+  stmt.run(newName, newDescription ?? null, JSON.stringify(newSpeakers), now, id);
+
+  return {
+    ...profile,
+    name: newName,
+    description: newDescription,
+    speakers: newSpeakers,
+    updatedAt: now,
+  };
+}
+
+export function addSpeakerToProfile(
+  profileId: string,
+  speaker: VoiceProfileSpeaker
+): VoiceProfile | null {
+  const profile = getVoiceProfile(profileId);
+  if (!profile) return null;
+
+  // Check if speaker already exists (by name)
+  const existingIndex = profile.speakers.findIndex(
+    (s) => s.name.toLowerCase() === speaker.name.toLowerCase()
+  );
+
+  let newSpeakers: VoiceProfileSpeaker[];
+  if (existingIndex >= 0) {
+    // Update existing speaker
+    newSpeakers = [...profile.speakers];
+    newSpeakers[existingIndex] = speaker;
+  } else {
+    // Add new speaker
+    newSpeakers = [...profile.speakers, speaker];
+  }
+
+  return updateVoiceProfile(profileId, { speakers: newSpeakers });
+}
+
+export function deleteVoiceProfile(id: string): boolean {
+  // First, unlink any jobs using this profile
+  const unlinkStmt = db.prepare('UPDATE jobs SET voice_profile_id = NULL WHERE voice_profile_id = ?');
+  unlinkStmt.run(id);
+
+  const stmt = db.prepare('DELETE FROM voice_profiles WHERE id = ?');
+  const result = stmt.run(id);
+  return result.changes > 0;
+}
+
+export function createVoiceProfileFromJob(
+  jobId: string,
+  profileName: string,
+  description?: string
+): VoiceProfile | null {
+  const job = getJob(jobId);
+  if (!job || job.speakers.length === 0) return null;
+
+  const { nanoid } = require('nanoid');
+  const profileId = nanoid();
+
+  // Convert job speakers to profile speakers
+  const profileSpeakers: VoiceProfileSpeaker[] = job.speakers.map((s) => ({
+    name: s.name,
+    voiceId: s.voiceId,
+    voiceDescription: s.voiceDescription,
+    gender: s.gender,
+    characteristics: s.characteristics,
+  }));
+
+  return createVoiceProfile(profileId, profileName, profileSpeakers, description, jobId);
+}
+
+export function getJobsUsingProfile(profileId: string): Job[] {
+  const stmt = db.prepare('SELECT * FROM jobs WHERE voice_profile_id = ? ORDER BY created_at DESC');
+  const rows = stmt.all(profileId) as JobRow[];
+  return rows.map(rowToJob);
 }
 
 export { db };

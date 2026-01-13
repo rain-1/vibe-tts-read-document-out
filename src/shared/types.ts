@@ -60,6 +60,8 @@ export interface Job {
   createdAt: string;
   updatedAt: string;
   completedAt?: string;
+  voiceProfileId?: string; // Voice profile used for this job
+  voiceProfileName?: string; // For display purposes
 }
 
 // API request/response types
@@ -119,6 +121,33 @@ export interface DocumentAnalysis {
     speakerId: string;
     speakerName: string;
   }>;
+}
+
+// Voice Profile - for consistent voices across multiple documents
+export interface VoiceProfile {
+  id: string;
+  name: string;
+  description?: string;
+  speakers: VoiceProfileSpeaker[];
+  createdAt: string;
+  updatedAt: string;
+  sourceJobId?: string; // The job this profile was created from
+}
+
+export interface VoiceProfileSpeaker {
+  name: string; // Character/speaker name (used for matching)
+  aliases?: string[]; // Alternative names (e.g., "Dr. Smith", "John Smith", "Smith")
+  voiceId: string;
+  voiceDescription?: string;
+  gender?: 'male' | 'female' | 'neutral';
+  characteristics?: string[];
+}
+
+// Extended job with voice profile support
+export interface CreateJobWithProfileRequest extends CreateJobRequest {
+  voiceProfileId?: string; // Use existing profile
+  createProfile?: boolean; // Create a new profile from this job
+  profileName?: string; // Name for the new profile
 }
 
 // Configuration

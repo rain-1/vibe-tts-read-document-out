@@ -10,6 +10,7 @@ import { config } from './config.js';
 import { jobRoutes } from './routes/jobs.js';
 import { websocketRoutes } from './routes/websocket.js';
 import { resumeRoutes } from './routes/resume.js';
+import { voiceProfileRoutes } from './routes/voice-profiles.js';
 import { createWorker } from './services/job-queue.js';
 
 const logger = pino({
@@ -62,6 +63,7 @@ async function start() {
     await fastify.register(jobRoutes);
     await fastify.register(websocketRoutes);
     await fastify.register(resumeRoutes);
+    await fastify.register(voiceProfileRoutes);
 
     // File upload endpoint (alternative to base64 in JSON)
     fastify.post('/api/upload', async (request, reply) => {

@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
 import { config } from '../config.js';
-import { DocumentAnalysis, Speaker, TTSVoice } from '../../shared/types.js';
+import { DocumentAnalysis, Speaker, TTSVoice, VoiceProfile, VoiceProfileSpeaker } from '../../shared/types.js';
 import { nanoid } from 'nanoid';
 
 // Create OpenAI client pointing to configured endpoint (works with OpenRouter, etc.)
@@ -267,6 +267,248 @@ export async function analyzeDocument(text: string): Promise<DocumentAnalysis> {
   });
 
   return { speakers, segments };
+}
+
+/**
+ * Analyze speakers with an existing voice profile
+ * Tries to match detected speakers to existing profile entries
+ */
+export async function analyzeSpeakersWithProfile(
+  text: string,
+  profile: VoiceProfile
+): Promise<SpeakerAnalysis> {
+  const existingSpeakers = profile.speakers.map((s) => {
+    const aliases = s.aliases ? ` (also known as: ${s.aliases.join(', ')})` : '';
+    return `- ${s.name}${aliases}: ${s.gender}, ${s.voiceDescription || 'no description'}`;
+  }).join('\n');
+
+  const systemPrompt = `You are analyzing a document to identify all speakers/characters for a text-to-speech system.
+
+IMPORTANT: This document is part of a series. You MUST use the existing character names when they appear.
+
+Existing characters from previous documents:
+${existingSpeakers}
+
+Your task is to:
+1. Identify all distinct speakers in the text (narrator + any characters who speak)
+2. Match speakers to existing characters when possible (use exact names from the list above)
+3. For NEW characters not in the list, create new entries
+4. Always include a "Narrator" for non-dialogue text
+
+Return JSON in this exact format:
+{
+  "speakers": [
+    {
+      "name": "Narrator",
+      "gender": "neutral",
+      "role": "narrator",
+      "voiceDescription": "calm, clear, authoritative",
+      "isExisting": true
+    },
+    {
+      "name": "Character Name",
+      "gender": "male|female|neutral",
+      "role": "description of their role",
+      "voiceDescription": "brief voice characteristics",
+      "isExisting": true|false
+    }
+  ]
+}
+
+Rules:
+- Always include a Narrator
+- Use EXACT names from the existing characters list when the same character appears
+- Set "isExisting": true for characters that match the existing list
+- Set "isExisting": false for completely new characters
+- For new characters, identify by name if mentioned, otherwise use descriptive names
+- Keep voice descriptions short (2-4 words)
+- gender must be exactly: "male", "female", or "neutral"`;
+
+  // For very long documents, sample the beginning, middle, and end
+  const maxSampleLength = 8000;
+  let sample = text;
+  if (text.length > maxSampleLength) {
+    const partLength = Math.floor(maxSampleLength / 3);
+    const start = text.slice(0, partLength);
+    const middle = text.slice(
+      Math.floor(text.length / 2) - partLength / 2,
+      Math.floor(text.length / 2) + partLength / 2
+    );
+    const end = text.slice(-partLength);
+    sample = `[START OF DOCUMENT]\n${start}\n\n[MIDDLE OF DOCUMENT]\n${middle}\n\n[END OF DOCUMENT]\n${end}`;
+  }
+
+  const response = await openai.chat.completions.create({
+    model: config.llm.model,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      {
+        role: 'user',
+        content: `Analyze this document and identify all speakers, matching to existing characters when possible:\n\n${sample}`,
+      },
+    ],
+    response_format: { type: 'json_object' },
+    temperature: 0.3,
+  });
+
+  const content = response.choices[0]?.message?.content;
+  if (!content) {
+    throw new Error('No response from LLM');
+  }
+
+  try {
+    return JSON.parse(content) as SpeakerAnalysis;
+  } catch {
+    // Fallback: return just narrator
+    return {
+      speakers: [
+        {
+          name: 'Narrator',
+          gender: 'neutral',
+          role: 'narrator',
+          voiceDescription: 'calm, clear voice',
+        },
+      ],
+    };
+  }
+}
+
+/**
+ * Assign voices using an existing profile
+ * Reuses voice IDs for existing speakers, assigns new ones for new speakers
+ */
+export function assignVoicesWithProfile(
+  speakerAnalysis: SpeakerAnalysis & { speakers: Array<{ isExisting?: boolean } & SpeakerAnalysis['speakers'][0]> },
+  profile: VoiceProfile,
+  availableVoices: TTSVoice[] = DEFAULT_VOICES
+): Speaker[] {
+  const assignedVoices = new Set<string>();
+  const speakers: Speaker[] = [];
+
+  // First, mark profile voices as assigned so they're reserved
+  for (const profileSpeaker of profile.speakers) {
+    assignedVoices.add(profileSpeaker.voiceId);
+  }
+
+  for (const speaker of speakerAnalysis.speakers) {
+    // Try to find matching profile speaker
+    const profileSpeaker = findMatchingProfileSpeaker(speaker.name, profile.speakers);
+
+    if (profileSpeaker) {
+      // Use existing voice from profile
+      speakers.push({
+        id: nanoid(),
+        name: speaker.name,
+        voiceId: profileSpeaker.voiceId,
+        voiceDescription: profileSpeaker.voiceDescription || speaker.voiceDescription,
+        gender: profileSpeaker.gender || speaker.gender,
+        characteristics: profileSpeaker.characteristics || [speaker.role],
+      });
+    } else {
+      // New speaker - assign a new voice
+      let voice = availableVoices.find(
+        (v) => v.gender === speaker.gender && !assignedVoices.has(v.id)
+      );
+
+      if (!voice) {
+        voice = availableVoices.find((v) => !assignedVoices.has(v.id));
+      }
+
+      if (!voice) {
+        voice = availableVoices[0];
+      }
+
+      assignedVoices.add(voice.id);
+
+      speakers.push({
+        id: nanoid(),
+        name: speaker.name,
+        voiceId: voice.id,
+        voiceDescription: speaker.voiceDescription,
+        gender: speaker.gender,
+        characteristics: [speaker.role],
+      });
+    }
+  }
+
+  return speakers;
+}
+
+/**
+ * Find a matching speaker in the profile by name or aliases
+ */
+function findMatchingProfileSpeaker(
+  name: string,
+  profileSpeakers: VoiceProfileSpeaker[]
+): VoiceProfileSpeaker | null {
+  const normalizedName = name.toLowerCase().trim();
+
+  for (const speaker of profileSpeakers) {
+    // Check main name
+    if (speaker.name.toLowerCase().trim() === normalizedName) {
+      return speaker;
+    }
+
+    // Check aliases
+    if (speaker.aliases) {
+      for (const alias of speaker.aliases) {
+        if (alias.toLowerCase().trim() === normalizedName) {
+          return speaker;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Full document analysis with voice profile support
+ * Uses existing profile to maintain consistent voices across documents
+ */
+export async function analyzeDocumentWithProfile(
+  text: string,
+  profile: VoiceProfile
+): Promise<{ analysis: DocumentAnalysis; newSpeakers: VoiceProfileSpeaker[] }> {
+  // Step 1: Identify speakers with awareness of existing profile
+  const speakerAnalysis = await analyzeSpeakersWithProfile(text, profile);
+
+  // Step 2: Assign voices, reusing profile voices where possible
+  const speakers = assignVoicesWithProfile(speakerAnalysis, profile);
+  const speakerNames = speakers.map((s) => s.name);
+
+  // Step 3: Annotate all segments with speakers
+  const segmentAnnotation = await annotateSegments(text, speakerNames);
+
+  // Map segments to include speaker IDs
+  const segments = segmentAnnotation.segments.map((seg) => {
+    const speaker = speakers.find((s) => s.name === seg.speaker) ?? speakers[0];
+    return {
+      text: seg.text,
+      speakerId: speaker.id,
+      speakerName: speaker.name,
+    };
+  });
+
+  // Identify new speakers that should be added to the profile
+  const newSpeakers: VoiceProfileSpeaker[] = [];
+  for (const speaker of speakers) {
+    const existsInProfile = findMatchingProfileSpeaker(speaker.name, profile.speakers);
+    if (!existsInProfile) {
+      newSpeakers.push({
+        name: speaker.name,
+        voiceId: speaker.voiceId,
+        voiceDescription: speaker.voiceDescription,
+        gender: speaker.gender,
+        characteristics: speaker.characteristics,
+      });
+    }
+  }
+
+  return {
+    analysis: { speakers, segments },
+    newSpeakers,
+  };
 }
 
 /**

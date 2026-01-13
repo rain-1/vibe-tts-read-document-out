@@ -13,6 +13,10 @@ const createJobSchema = z.object({
   filename: z.string().min(1),
   fileContent: z.string().min(1),
   fileType: z.enum(['text', 'pdf', 'html']),
+  voiceProfileId: z.string().optional(),
+  autoUpdateProfile: z.boolean().optional().default(true),
+  createProfileFromJob: z.boolean().optional(),
+  newProfileName: z.string().optional(),
 });
 
 const jobIdSchema = z.object({
@@ -35,18 +39,34 @@ export async function jobRoutes(fastify: FastifyInstance) {
       try {
         const body = createJobSchema.parse(request.body);
 
+        // Validate voice profile if provided
+        if (body.voiceProfileId) {
+          const profile = db.getVoiceProfile(body.voiceProfileId);
+          if (!profile) {
+            return reply.code(400).send({ error: 'Voice profile not found' });
+          }
+        }
+
         // Generate job ID
         const jobId = nanoid();
 
-        // Create job in database
-        const job = db.createJob(jobId, body.filename, body.fileType);
+        // Create job in database with voice profile reference
+        const job = db.createJob(jobId, body.filename, body.fileType, body.voiceProfileId);
 
-        // Add to processing queue
-        await addJob(jobId, body.fileContent, body.fileType);
+        // Add to processing queue with voice profile settings
+        await addJob(
+          jobId,
+          body.fileContent,
+          body.fileType,
+          body.voiceProfileId,
+          body.autoUpdateProfile
+        );
 
         return reply.code(201).send({
           jobId: job.id,
           status: job.status,
+          voiceProfileId: job.voiceProfileId,
+          voiceProfileName: job.voiceProfileName,
         });
       } catch (error) {
         if (error instanceof z.ZodError) {

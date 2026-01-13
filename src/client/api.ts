@@ -1,4 +1,4 @@
-import { Job, JobProgress, WSMessage } from '../shared/types';
+import { Job, JobProgress, WSMessage, VoiceProfile } from '../shared/types';
 
 const API_BASE = '/api';
 
@@ -19,12 +19,22 @@ async function handleResponse<T>(response: Response): Promise<T> {
 export async function createJob(
   filename: string,
   fileContent: string,
-  fileType: 'text' | 'pdf' | 'html'
-): Promise<{ jobId: string; status: string }> {
+  fileType: 'text' | 'pdf' | 'html',
+  options?: {
+    voiceProfileId?: string;
+    autoUpdateProfile?: boolean;
+  }
+): Promise<{ jobId: string; status: string; voiceProfileId?: string; voiceProfileName?: string }> {
   const response = await fetch(`${API_BASE}/jobs`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ filename, fileContent, fileType }),
+    body: JSON.stringify({
+      filename,
+      fileContent,
+      fileType,
+      voiceProfileId: options?.voiceProfileId,
+      autoUpdateProfile: options?.autoUpdateProfile ?? true,
+    }),
   });
   return handleResponse(response);
 }
@@ -184,4 +194,47 @@ export function readFileAsText(file: File): Promise<string> {
     reader.onerror = () => reject(reader.error);
     reader.readAsText(file);
   });
+}
+
+// Voice Profile API
+export async function getVoiceProfiles(): Promise<{ profiles: VoiceProfile[] }> {
+  const response = await fetch(`${API_BASE}/voice-profiles`);
+  return handleResponse(response);
+}
+
+export async function getVoiceProfile(profileId: string): Promise<{ profile: VoiceProfile; jobs: Job[] }> {
+  const response = await fetch(`${API_BASE}/voice-profiles/${profileId}`);
+  return handleResponse(response);
+}
+
+export async function createVoiceProfile(
+  name: string,
+  description?: string
+): Promise<{ profile: VoiceProfile }> {
+  const response = await fetch(`${API_BASE}/voice-profiles`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, description }),
+  });
+  return handleResponse(response);
+}
+
+export async function createVoiceProfileFromJob(
+  jobId: string,
+  name: string,
+  description?: string
+): Promise<{ profile: VoiceProfile }> {
+  const response = await fetch(`${API_BASE}/voice-profiles/from-job`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jobId, name, description }),
+  });
+  return handleResponse(response);
+}
+
+export async function deleteVoiceProfile(profileId: string): Promise<{ success: boolean }> {
+  const response = await fetch(`${API_BASE}/voice-profiles/${profileId}`, {
+    method: 'DELETE',
+  });
+  return handleResponse(response);
 }
