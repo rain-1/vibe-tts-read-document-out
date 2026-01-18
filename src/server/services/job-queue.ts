@@ -230,87 +230,103 @@ async function processJob(bullJob: BullJob<JobData>): Promise<void> {
   // Track new speakers for profile update
   let newSpeakersForProfile: VoiceProfileSpeaker[] = [];
 
+  // Check if this is a resumed job (already has segments)
+  const existingJob = db.getJob(jobId);
+  const isResumedJob = existingJob && existingJob.segments.length > 0;
+  let segments: TextSegment[] = isResumedJob ? existingJob.segments : [];
+
+  if (isResumedJob) {
+    logger.info({ jobId, segmentCount: existingJob.segments.length }, 'Resuming job with existing segments');
+  }
+
   try {
-    // Step 1: Parse document
-    updateProgress(jobId, 'parsing', {
-      stepDescription: 'Parsing document...',
-      overallProgress: 5,
-      stepProgress: 0,
-    });
+    if (!isResumedJob) {
+      // Need document content for new jobs
+      if (!documentContent) {
+        throw new Error('Cannot process job: no document content provided. Job cannot be restarted - please upload the document again.');
+      }
 
-    const parsed = await parseDocument(
-      fileType === 'pdf' ? Buffer.from(documentContent, 'base64') : documentContent,
-      fileType
-    );
-
-    logger.info({ jobId, textLength: parsed.text.length }, 'Document parsed');
-
-    updateProgress(jobId, 'parsing', {
-      stepDescription: 'Document parsed',
-      overallProgress: 10,
-      stepProgress: 100,
-    });
-
-    // Step 2: Analyze document with LLM
-    updateProgress(jobId, 'analyzing', {
-      stepDescription: 'Analyzing speakers and content...',
-      overallProgress: 15,
-      stepProgress: 0,
-    });
-
-    // Check if we have a voice profile to use
-    let analysis;
-    const voiceProfile = voiceProfileId ? db.getVoiceProfile(voiceProfileId) : null;
-
-    if (voiceProfile) {
-      logger.info({ jobId, profileName: voiceProfile.name }, 'Using voice profile');
-      updateProgress(jobId, 'analyzing', {
-        stepDescription: `Analyzing with profile: ${voiceProfile.name}...`,
-        overallProgress: 15,
-        stepProgress: 10,
+      // Step 1: Parse document
+      updateProgress(jobId, 'parsing', {
+        stepDescription: 'Parsing document...',
+        overallProgress: 5,
+        stepProgress: 0,
       });
 
-      const result = await analyzeDocumentWithProfile(parsed.text, voiceProfile);
-      analysis = result.analysis;
-      newSpeakersForProfile = result.newSpeakers;
+      const parsed = await parseDocument(
+        fileType === 'pdf' ? Buffer.from(documentContent, 'base64') : documentContent,
+        fileType
+      );
 
-      if (newSpeakersForProfile.length > 0) {
-        logger.info(
-          { jobId, newSpeakers: newSpeakersForProfile.map((s) => s.name) },
-          'New speakers detected'
-        );
+      logger.info({ jobId, textLength: parsed.text.length }, 'Document parsed');
+
+      updateProgress(jobId, 'parsing', {
+        stepDescription: 'Document parsed',
+        overallProgress: 10,
+        stepProgress: 100,
+      });
+
+      // Step 2: Analyze document with LLM
+      updateProgress(jobId, 'analyzing', {
+        stepDescription: 'Analyzing speakers and content...',
+        overallProgress: 15,
+        stepProgress: 0,
+      });
+
+      // Check if we have a voice profile to use
+      let analysis;
+      const voiceProfile = voiceProfileId ? db.getVoiceProfile(voiceProfileId) : null;
+
+      if (voiceProfile) {
+        logger.info({ jobId, profileName: voiceProfile.name }, 'Using voice profile');
+        updateProgress(jobId, 'analyzing', {
+          stepDescription: `Analyzing with profile: ${voiceProfile.name}...`,
+          overallProgress: 15,
+          stepProgress: 10,
+        });
+
+        const result = await analyzeDocumentWithProfile(parsed.text, voiceProfile);
+        analysis = result.analysis;
+        newSpeakersForProfile = result.newSpeakers;
+
+        if (newSpeakersForProfile.length > 0) {
+          logger.info(
+            { jobId, newSpeakers: newSpeakersForProfile.map((s) => s.name) },
+            'New speakers detected'
+          );
+        }
+      } else {
+        analysis = await analyzeDocument(parsed.text);
       }
-    } else {
-      analysis = await analyzeDocument(parsed.text);
+
+      logger.info(
+        { jobId, speakerCount: analysis.speakers.length, segmentCount: analysis.segments.length },
+        'Document analyzed'
+      );
+
+      // Save speakers to database
+      db.updateJobSpeakers(jobId, analysis.speakers);
+
+      // Create text segments with IDs
+      segments = analysis.segments.map((seg, index) => ({
+        id: nanoid(),
+        index,
+        text: seg.text,
+        speakerId: seg.speakerId,
+        speakerName: seg.speakerName,
+        status: 'pending',
+        retryCount: 0,
+      }));
+
+      db.updateJobSegments(jobId, segments);
+
+      updateProgress(jobId, 'analyzing', {
+        stepDescription: `Found ${analysis.speakers.length} speakers, ${segments.length} segments`,
+        overallProgress: 25,
+        stepProgress: 100,
+        segmentsTotal: segments.length,
+      });
     }
-
-    logger.info(
-      { jobId, speakerCount: analysis.speakers.length, segmentCount: analysis.segments.length },
-      'Document analyzed'
-    );
-
-    // Save speakers to database
-    db.updateJobSpeakers(jobId, analysis.speakers);
-
-    // Create text segments with IDs
-    const segments: TextSegment[] = analysis.segments.map((seg, index) => ({
-      id: nanoid(),
-      index,
-      text: seg.text,
-      speakerId: seg.speakerId,
-      speakerName: seg.speakerName,
-      status: 'pending',
-      retryCount: 0,
-    }));
-
-    db.updateJobSegments(jobId, segments);
-
-    updateProgress(jobId, 'analyzing', {
-      stepDescription: `Found ${analysis.speakers.length} speakers, ${segments.length} segments`,
-      overallProgress: 25,
-      stepProgress: 100,
-      segmentsTotal: segments.length,
-    });
 
     // Step 3: Generate TTS for each segment
     const outputDir = path.join(config.paths.temp, jobId);
@@ -318,25 +334,47 @@ async function processJob(bullJob: BullJob<JobData>): Promise<void> {
       fs.mkdirSync(outputDir, { recursive: true });
     }
 
-    updateProgress(jobId, 'generating_tts', {
-      stepDescription: 'Generating speech...',
-      overallProgress: 30,
-      stepProgress: 0,
-      segmentsTotal: segments.length,
-      segmentsCompleted: 0,
-    });
+    // Get speakers from database (for resumed jobs, or the just-saved ones)
+    const currentJob = db.getJob(jobId)!;
+    const speakers = currentJob.speakers;
 
     // Create a map of speaker ID to voice ID
     const speakerVoiceMap = new Map(
-      analysis.speakers.map((s) => [s.id, s.voiceId])
+      speakers.map((s) => [s.id, s.voiceId])
     );
 
+    // For resumed jobs, collect already completed segments and count them
     const audioSegments: Array<{ filePath: string; index: number }> = [];
-    let completedSegments = 0;
+    let alreadyCompletedCount = 0;
+
+    if (isResumedJob) {
+      for (const seg of segments) {
+        if (seg.status === 'completed' && seg.audioFile && fs.existsSync(seg.audioFile)) {
+          audioSegments.push({ filePath: seg.audioFile, index: seg.index });
+          alreadyCompletedCount++;
+        }
+      }
+      logger.info({ jobId, alreadyCompletedCount }, 'Found already completed segments');
+    }
+
+    updateProgress(jobId, 'generating_tts', {
+      stepDescription: isResumedJob ? `Resuming speech generation (${alreadyCompletedCount} already done)...` : 'Generating speech...',
+      overallProgress: 30 + Math.round((alreadyCompletedCount / segments.length) * 50),
+      stepProgress: Math.round((alreadyCompletedCount / segments.length) * 100),
+      segmentsTotal: segments.length,
+      segmentsCompleted: alreadyCompletedCount,
+    });
+
+    let completedSegments = alreadyCompletedCount;
     let failedSegments = 0;
 
     for (const segment of segments) {
-      const voiceId = speakerVoiceMap.get(segment.speakerId) ?? 'alloy';
+      // Skip already completed segments
+      if (segment.status === 'completed' && segment.audioFile && fs.existsSync(segment.audioFile)) {
+        continue;
+      }
+
+      const voiceId = speakerVoiceMap.get(segment.speakerId) ?? 'af_heart'; // Default to Kokoro voice
 
       // Update segment status to processing
       db.updateSegmentStatus(jobId, segment.id, 'processing');
@@ -380,7 +418,7 @@ async function processJob(bullJob: BullJob<JobData>): Promise<void> {
         overallProgress,
         stepProgress: ttsProgress,
         segmentsCompleted: completedSegments,
-        estimatedTimeRemaining: estimateTimeRemaining(startTime, completedSegments, segments.length),
+        estimatedTimeRemaining: estimateTimeRemaining(startTime, completedSegments - alreadyCompletedCount, segments.length - alreadyCompletedCount),
       });
 
       // Allow some failures but not too many

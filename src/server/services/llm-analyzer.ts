@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import { config } from '../config.js';
 import { DocumentAnalysis, Speaker, TTSVoice, VoiceProfile, VoiceProfileSpeaker } from '../../shared/types.js';
 import { nanoid } from 'nanoid';
+import { getTTSProvider } from './tts/index.js';
 
 // Create OpenAI client pointing to configured endpoint (works with OpenRouter, etc.)
 const openai = new OpenAI({
@@ -9,14 +10,44 @@ const openai = new OpenAI({
   apiKey: config.llm.apiKey,
 });
 
-// Default voice pool for speaker assignment
+// Cache for available voices from the TTS provider
+let cachedVoices: TTSVoice[] | null = null;
+
+/**
+ * Get voices from the configured TTS provider
+ */
+async function getProviderVoices(): Promise<TTSVoice[]> {
+  if (cachedVoices) {
+    return cachedVoices;
+  }
+
+  try {
+    const provider = getTTSProvider();
+    cachedVoices = await provider.getVoices();
+    console.log(`Loaded ${cachedVoices.length} voices from ${provider.name} TTS provider`);
+    return cachedVoices;
+  } catch (error) {
+    console.warn('Failed to get voices from TTS provider, using fallback:', error);
+    // Fallback to Kokoro voices
+    return [
+      { id: 'af_heart', name: 'Heart', gender: 'female', description: 'Warm, friendly female voice' },
+      { id: 'af_bella', name: 'Bella', gender: 'female', description: 'Elegant female voice' },
+      { id: 'af_nova', name: 'Nova', gender: 'female', description: 'Modern female voice' },
+      { id: 'am_adam', name: 'Adam', gender: 'male', description: 'Strong male voice' },
+      { id: 'am_michael', name: 'Michael', gender: 'male', description: 'Authoritative male voice' },
+      { id: 'am_echo', name: 'Echo', gender: 'male', description: 'Resonant male voice' },
+    ];
+  }
+}
+
+// Fallback voices (Kokoro-compatible)
 const DEFAULT_VOICES: TTSVoice[] = [
-  { id: 'alloy', name: 'Alloy', gender: 'neutral', description: 'Neutral, balanced voice' },
-  { id: 'echo', name: 'Echo', gender: 'male', description: 'Warm, conversational male voice' },
-  { id: 'fable', name: 'Fable', gender: 'male', description: 'Expressive, storytelling male voice' },
-  { id: 'onyx', name: 'Onyx', gender: 'male', description: 'Deep, authoritative male voice' },
-  { id: 'nova', name: 'Nova', gender: 'female', description: 'Friendly, warm female voice' },
-  { id: 'shimmer', name: 'Shimmer', gender: 'female', description: 'Clear, expressive female voice' },
+  { id: 'af_heart', name: 'Heart', gender: 'female', description: 'Warm, friendly female voice' },
+  { id: 'af_bella', name: 'Bella', gender: 'female', description: 'Elegant female voice' },
+  { id: 'af_nova', name: 'Nova', gender: 'female', description: 'Modern female voice' },
+  { id: 'am_adam', name: 'Adam', gender: 'male', description: 'Strong male voice' },
+  { id: 'am_michael', name: 'Michael', gender: 'male', description: 'Authoritative male voice' },
+  { id: 'am_echo', name: 'Echo', gender: 'male', description: 'Resonant male voice' },
 ];
 
 interface SpeakerAnalysis {
@@ -249,8 +280,9 @@ export async function analyzeDocument(text: string): Promise<DocumentAnalysis> {
   // Step 1: Identify all speakers
   const speakerAnalysis = await analyzeSpeakers(text);
 
-  // Step 2: Assign voices to speakers
-  const speakers = assignVoices(speakerAnalysis);
+  // Step 2: Get voices from TTS provider and assign to speakers
+  const availableVoices = await getProviderVoices();
+  const speakers = assignVoices(speakerAnalysis, availableVoices);
   const speakerNames = speakers.map((s) => s.name);
 
   // Step 3: Annotate all segments with speakers
@@ -473,8 +505,9 @@ export async function analyzeDocumentWithProfile(
   // Step 1: Identify speakers with awareness of existing profile
   const speakerAnalysis = await analyzeSpeakersWithProfile(text, profile);
 
-  // Step 2: Assign voices, reusing profile voices where possible
-  const speakers = assignVoicesWithProfile(speakerAnalysis, profile);
+  // Step 2: Get voices from TTS provider and assign, reusing profile voices where possible
+  const availableVoices = await getProviderVoices();
+  const speakers = assignVoicesWithProfile(speakerAnalysis, profile, availableVoices);
   const speakerNames = speakers.map((s) => s.name);
 
   // Step 3: Annotate all segments with speakers
@@ -514,7 +547,6 @@ export async function analyzeDocumentWithProfile(
 /**
  * Get available voices for the current TTS provider
  */
-export function getAvailableVoices(): TTSVoice[] {
-  // Could be extended to fetch from TTS provider API
-  return DEFAULT_VOICES;
+export async function getAvailableVoices(): Promise<TTSVoice[]> {
+  return getProviderVoices();
 }

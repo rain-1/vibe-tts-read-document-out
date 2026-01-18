@@ -33,14 +33,10 @@ export function canResumeJob(job: Job): boolean {
     return false;
   }
 
-  // Must have segments to resume from
-  if (!job.segments || job.segments.length === 0) {
-    return false;
-  }
-
-  // At least some segments should be completed
-  const completedSegments = job.segments.filter((s) => s.status === 'completed');
-  return completedSegments.length > 0;
+  // Jobs can always be resumed - they'll restart from the appropriate step
+  // Even if there are no segments yet (failed during parsing/analyzing),
+  // the job can be re-queued to start over
+  return true;
 }
 
 /**
@@ -99,44 +95,65 @@ export async function resumeJob(jobId: string): Promise<ResumeResult> {
     };
   }
 
-  const checkpoint = getResumeCheckpoint(job);
+  // Check if we have segments (job got past analyzing step)
+  const hasSegments = job.segments && job.segments.length > 0;
 
-  logger.info(
-    {
-      jobId,
-      checkpoint,
-    },
-    'Resuming job'
-  );
+  if (hasSegments) {
+    const checkpoint = getResumeCheckpoint(job);
 
-  // Reset failed and pending segments to pending status
-  const updatedSegments = job.segments.map((seg) => {
-    if (seg.status === 'failed' || seg.status === 'processing') {
-      return { ...seg, status: 'pending' as const, retryCount: seg.retryCount };
-    }
-    return seg;
-  });
+    logger.info(
+      {
+        jobId,
+        checkpoint,
+      },
+      'Resuming job with segments'
+    );
 
-  db.updateJobSegments(jobId, updatedSegments);
+    // Reset failed and pending segments to pending status
+    const updatedSegments = job.segments.map((seg) => {
+      if (seg.status === 'failed' || seg.status === 'processing') {
+        return { ...seg, status: 'pending' as const, retryCount: seg.retryCount };
+      }
+      return seg;
+    });
 
-  // Update job status to indicate it's being resumed
-  db.updateJobStatus(jobId, 'pending', {
-    stepDescription: `Resuming from segment ${checkpoint.lastCompletedIndex + 1}`,
-    overallProgress: Math.round(
-      (checkpoint.completedSegments / job.segments.length) * 80 + 20
-    ),
-  });
+    db.updateJobSegments(jobId, updatedSegments);
 
-  // Re-add to queue
-  // Note: The worker will detect that segments are already processed
-  // and skip them
-  await addJob(jobId, '', job.fileType);
+    // Update job status to indicate it's being resumed
+    db.updateJobStatus(jobId, 'generating_tts', {
+      stepDescription: `Resuming from segment ${checkpoint.lastCompletedIndex + 2}`,
+      overallProgress: Math.round(
+        (checkpoint.completedSegments / job.segments.length) * 80 + 20
+      ),
+    });
 
-  return {
-    success: true,
-    message: `Job resumed from segment ${checkpoint.lastCompletedIndex + 1}`,
-    resumedFromSegment: checkpoint.lastCompletedIndex + 1,
-  };
+    // Re-add to queue
+    await addJob(jobId, '', job.fileType);
+
+    return {
+      success: true,
+      message: `Job resumed from segment ${checkpoint.lastCompletedIndex + 2}`,
+      resumedFromSegment: checkpoint.lastCompletedIndex + 2,
+    };
+  } else {
+    // Job failed before generating segments - restart from beginning
+    logger.info({ jobId }, 'Resuming job from beginning (no segments yet)');
+
+    // Reset to pending status
+    db.updateJobStatus(jobId, 'pending', {
+      stepDescription: 'Restarting job',
+      overallProgress: 0,
+      stepProgress: 0,
+    });
+
+    // Re-add to queue - will start from parsing
+    await addJob(jobId, '', job.fileType);
+
+    return {
+      success: true,
+      message: 'Job restarted from beginning',
+    };
+  }
 }
 
 /**

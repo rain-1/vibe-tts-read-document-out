@@ -192,6 +192,7 @@ function App() {
                   job={selectedJob}
                   onDelete={() => handleDeleteJob(selectedJob.id)}
                   onCreateProfile={() => handleCreateProfileFromJob(selectedJob.id)}
+                  onJobUpdate={fetchJobs}
                 />
               ) : (
                 <div className="flex items-center justify-center h-[500px] text-gray-500">

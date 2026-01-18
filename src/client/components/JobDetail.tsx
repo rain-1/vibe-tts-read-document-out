@@ -6,6 +6,7 @@ interface JobDetailProps {
   job: Job;
   onDelete: () => void;
   onCreateProfile?: () => void;
+  onJobUpdate?: () => void;
 }
 
 const STEPS: Array<{ status: JobStatus; label: string; icon: string }> = [
@@ -22,8 +23,15 @@ function getStepIndex(status: JobStatus): number {
   return idx === -1 ? 0 : idx;
 }
 
-export default function JobDetail({ job, onDelete, onCreateProfile }: JobDetailProps) {
+function getStepLabel(status: JobStatus): string {
+  const step = STEPS.find(s => s.status === status);
+  return step?.label || status;
+}
+
+export default function JobDetail({ job, onDelete, onCreateProfile, onJobUpdate }: JobDetailProps) {
   const [liveProgress, setLiveProgress] = useState<JobProgress>(job.progress);
+  const [isRetrying, setIsRetrying] = useState(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
 
   // Subscribe to real-time updates
@@ -100,9 +108,10 @@ export default function JobDetail({ job, onDelete, onCreateProfile }: JobDetailP
           <div className="space-y-4">
             {STEPS.map((step, index) => {
               const stepIndex = getStepIndex(step.status);
-              const isActive = liveProgress.currentStep === step.status;
+              const isActive = liveProgress.currentStep === step.status && !isFailed;
               const isDone = currentStepIndex > stepIndex || isComplete;
-              const isPending = currentStepIndex < stepIndex;
+              const isFailedStep = isFailed && liveProgress.currentStep === step.status;
+              const isPending = currentStepIndex < stepIndex && !isFailed;
 
               return (
                 <div key={step.status} className="flex items-center">
@@ -110,13 +119,18 @@ export default function JobDetail({ job, onDelete, onCreateProfile }: JobDetailP
                   <div
                     className={`
                       flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center
-                      ${isDone ? 'bg-green-100' : isActive ? 'bg-blue-100' : 'bg-gray-100'}
+                      ${isDone ? 'bg-green-100' : isFailedStep ? 'bg-red-100' : isActive ? 'bg-blue-100' : 'bg-gray-100'}
                       ${isActive ? 'ring-2 ring-blue-500 ring-offset-2' : ''}
+                      ${isFailedStep ? 'ring-2 ring-red-500 ring-offset-2' : ''}
                     `}
                   >
                     {isDone ? (
                       <svg className="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                      </svg>
+                    ) : isFailedStep ? (
+                      <svg className="w-5 h-5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                       </svg>
                     ) : (
                       <svg
@@ -136,14 +150,20 @@ export default function JobDetail({ job, onDelete, onCreateProfile }: JobDetailP
                       <span
                         className={`
                           text-sm font-medium
-                          ${isDone ? 'text-green-600' : isActive ? 'text-blue-600' : 'text-gray-400'}
+                          ${isDone ? 'text-green-600' : isFailedStep ? 'text-red-600' : isActive ? 'text-blue-600' : 'text-gray-400'}
                         `}
                       >
                         {step.label}
+                        {isFailedStep && <span className="ml-2 text-xs font-normal">(Failed)</span>}
                       </span>
                       {isActive && liveProgress.stepProgress > 0 && (
                         <span className="text-xs text-gray-500">
                           {liveProgress.stepProgress}%
+                        </span>
+                      )}
+                      {isFailedStep && liveProgress.stepProgress > 0 && (
+                        <span className="text-xs text-red-500">
+                          {liveProgress.stepProgress}% when failed
                         </span>
                       )}
                     </div>
@@ -159,6 +179,21 @@ export default function JobDetail({ job, onDelete, onCreateProfile }: JobDetailP
                         </div>
                         <p className="text-xs text-gray-500 mt-1">
                           {liveProgress.stepDescription}
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Progress bar for failed step showing where it stopped */}
+                    {isFailedStep && liveProgress.stepProgress > 0 && (
+                      <div className="mt-2">
+                        <div className="h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-red-400"
+                            style={{ width: `${liveProgress.stepProgress}%` }}
+                          />
+                        </div>
+                        <p className="text-xs text-red-500 mt-1">
+                          {liveProgress.stepDescription || 'Processing stopped'}
                         </p>
                       </div>
                     )}
@@ -266,20 +301,86 @@ export default function JobDetail({ job, onDelete, onCreateProfile }: JobDetailP
           </div>
         )}
 
-        {/* Error Message */}
-        {isFailed && job.errorMessage && (
+        {/* Error Message with Retry */}
+        {isFailed && (
           <div className="mb-8 bg-red-50 border border-red-200 rounded-lg p-4">
-            <div className="flex">
-              <svg className="w-5 h-5 text-red-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div className="flex items-start">
+              <svg className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
-              <div className="ml-3">
+              <div className="ml-3 flex-1">
                 <h4 className="text-sm font-medium text-red-800">
-                  Processing Failed
+                  Failed at: {getStepLabel(liveProgress.currentStep)}
                 </h4>
-                <p className="text-sm text-red-700 mt-1">
-                  {job.errorMessage}
-                </p>
+                {job.errorMessage && (
+                  <div className="mt-2">
+                    <p className="text-sm text-red-700 font-medium">Error:</p>
+                    <pre className="text-xs text-red-600 mt-1 whitespace-pre-wrap bg-red-100 p-2 rounded max-h-32 overflow-auto">
+                      {job.errorMessage}
+                    </pre>
+                  </div>
+                )}
+
+                {/* Segment info if available */}
+                {liveProgress.segmentsTotal > 0 && (
+                  <p className="text-xs text-red-600 mt-2">
+                    Progress: {liveProgress.segmentsCompleted} of {liveProgress.segmentsTotal} segments completed
+                  </p>
+                )}
+
+                {/* Retry button - only show if job has segments (can be resumed) */}
+                {liveProgress.segmentsTotal > 0 ? (
+                  <div className="mt-4 flex items-center gap-3">
+                    <button
+                      onClick={async () => {
+                        setIsRetrying(true);
+                        setRetryError(null);
+                        try {
+                          await api.resumeJob(job.id);
+                          onJobUpdate?.();
+                        } catch (err) {
+                          setRetryError(err instanceof Error ? err.message : 'Failed to retry job');
+                        } finally {
+                          setIsRetrying(false);
+                        }
+                      }}
+                      disabled={isRetrying}
+                      className="inline-flex items-center px-3 py-1.5 bg-red-600 text-white text-sm font-medium rounded-md hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {isRetrying ? (
+                        <>
+                          <svg className="animate-spin -ml-0.5 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                          </svg>
+                          Retrying...
+                        </>
+                      ) : (
+                        <>
+                          <svg className="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                          </svg>
+                          Resume Job
+                        </>
+                      )}
+                    </button>
+                    <span className="text-xs text-red-500">
+                      Will continue from segment {liveProgress.segmentsCompleted + 1}
+                    </span>
+                  </div>
+                ) : (
+                  <div className="mt-4 p-3 bg-yellow-50 border border-yellow-200 rounded-md">
+                    <p className="text-sm text-yellow-800">
+                      This job failed before analysis completed. Please delete this job and upload the document again.
+                    </p>
+                  </div>
+                )}
+
+                {retryError && (
+                  <p className="text-xs text-red-600 mt-2">
+                    Retry failed: {retryError}
+                  </p>
+                )}
               </div>
             </div>
           </div>

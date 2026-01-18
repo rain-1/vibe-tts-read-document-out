@@ -39,3 +39,9 @@ coverage/
 # Temp files
 *.tmp
 *.temp
+
+# pycache
+__pycache__
+
+# not sure if these should actually be ignored
+package-lock.json

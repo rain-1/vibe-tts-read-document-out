@@ -238,3 +238,41 @@ export async function deleteVoiceProfile(profileId: string): Promise<{ success: 
   });
   return handleResponse(response);
 }
+
+// Job Resume API
+export async function getResumeStatus(jobId: string): Promise<{
+  canResume: boolean;
+  checkpoint: {
+    step: string;
+    segmentsCompleted: number;
+    segmentsTotal: number;
+    lastCompletedSegmentIndex: number;
+  } | null;
+  currentStatus: string;
+}> {
+  const response = await fetch(`${API_BASE}/jobs/${jobId}/resume-status`);
+  return handleResponse(response);
+}
+
+export async function resumeJob(jobId: string): Promise<{
+  success: boolean;
+  message: string;
+  resumeFrom?: string;
+}> {
+  const response = await fetch(`${API_BASE}/jobs/${jobId}/resume`, {
+    method: 'POST',
+  });
+  return handleResponse(response);
+}
+
+export async function retryFailedSegments(
+  jobId: string,
+  segmentIds?: string[]
+): Promise<{ success: boolean; message: string }> {
+  const response = await fetch(`${API_BASE}/jobs/${jobId}/retry-segments`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ segmentIds }),
+  });
+  return handleResponse(response);
+}

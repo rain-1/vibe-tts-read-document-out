@@ -49,4 +49,5 @@ export function listTTSProviders(): TTSProviderType[] {
   return Object.keys(providers) as TTSProviderType[];
 }
 
-export { BaseTTSProvider, TTSRequest, TTSResult, TTSProviderConfig } from './base.js';
+export { BaseTTSProvider } from './base.js';
+export type { TTSRequest, TTSResult, TTSProviderConfig } from './base.js';
